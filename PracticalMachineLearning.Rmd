@@ -1,0 +1,140 @@
+---
+title: "Predicting Quality in Human Activity using Machine Learning"
+author: "Chad Salinas"
+output: html_document
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Executive Summary
+We will build a machine learning model to predict the quality of 6 study participants performing a weight lifting exercise. Under the supervision an experienced weight lifter, each participant performed 1 set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in 5 different ways:  
+(Class A) - exactly according to the specification   
+(Class B) - throwing the elbows to the front   
+(Class C) - lifting the dumbbell only halfway   
+(Class D) - lowering the dumbbell only halfway  
+(Class E) - throwing the hips to the front   
+
+Class A represents the paragon of excecuting the motion correctly. Using 5 sensors on the participants' bodies, we use the data to train our model to correctly classify each of 20 test cases into either Class A or one of the other 4 mistake categories with a high degree of accuracy. 
+
+##Study Design 
+Firstly, we tidy up the data as usual.  Then, we arrive at our final group of features by excluding highly correlated predictors. Secondly, we split training set into training & cross-validation. We then train our models using training data then apply the models to the cross-validation data to get a sense of the accuracy/out-of-sample error. We test 3 models built off of the training data and assess their accuracy/out-of-sample errors on the cross-validation set.  Finally, we use the most accurate of the models on the test data.  
+
+Our hypothesis going in is that Random Forests(RF) should be the best predictor. RF is highly accurate in classification problems involving a high number of features wherein it can reduce bias of fitted values and estimated splits.  Let's see if that turns out to be true given this problem instance. 
+
+##Exploratory Analysis
+We load and explore the data with an eye towards identifying useful, complete, and non-colinear predictors to train our model.  
+
+```{r loadData}
+trainUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+testUrl <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+trainingData <- read.csv(url(trainUrl), na.strings = c("NA", ""))
+
+```
+
+We initally find 160 columns.  
+Firstly, we tidy up the data set by excluding:  
+1) NA data  
+2) Incomplete data  
+3) Useless non-predictor data  
+
+```{r tidyData}
+# Get rid of NAs and blank cols
+trainingData <- trainingData[, colSums(is.na(trainingData)) == 0]
+
+# Get rid of useless non-predictor cols
+trainingData <- trainingData[ , -c(1:7)]
+
+```
+
+###Split Data and Identify Final Features
+We split off the cross validation data from the training data and then get rid of highly-correlated predictors in the training data.  
+
+```{r split_and_IdFeatures}
+suppressMessages(library(caret))
+set.seed(1964)
+inTrain <- createDataPartition(trainingData$classe, p = 0.8, list = FALSE)
+trainingData <- trainingData[inTrain, ]
+cvData <- trainingData[-inTrain, ]
+
+suppressMessages(library(corrplot))
+M <- cor(trainingData[,-dim(trainingData)[2]],)
+highCorVars <- findCorrelation(M, cutoff = 0.7)
+finalTrainingData <- trainingData[,-highCorVars]
+M <- cor(finalTrainingData[,-dim(finalTrainingData)[2]])
+corrplot(M, type = "upper", order = "hclust", addrect = 3, tl.cex = 0.5)
+
+# Final predictors
+predictors <- names(finalTrainingData[1:(ncol(finalTrainingData) - 1)])
+
+```
+
+Now, we have settled on the final 30 features upon which to train our models to predict classe.  
+
+##Fit Model using Decision Tree  
+We are dealing with a classification problem, so we choose to start our modelling effort with a basic Decision Tree to get a baseline accuracy/out-of-sample error.
+
+```{r dtFitModel}
+dtModelFit <- train(classe~., method="rpart", data=finalTrainingData)
+dtCVPredictions <- predict(dtModelFit, cvData[, predictors])
+dtCVConfMatrix <- confusionMatrix(dtCVPredictions, cvData$classe)
+dtCVConfMatrix
+dtCVConfMatrix$overall[1]
+
+```
+
+Essentially, the Decision Tree model can't even classify the particpant's exercise correctly half of the time -- 50/50 accuracy/out-of-sample error on the hold-out cross validation data. 
+Let's see if we can do better!
+
+##Fit Model using GBM
+We choose GBM to train our model because other than Random Forests, Boosting models are usually one of the best performers when modeling these sort of classification problems.
+
+```{r gbmFitModel}
+gbmCtrl <- trainControl(method = "repeatedcv", number = 5, repeats = 1) #try to speed it up
+gbmModelFit  <- train(classe~., data=finalTrainingData, method = "gbm", trControl = gbmCtrl, verbose = FALSE)
+gbmCVPredictions <- predict(gbmModelFit, cvData[, predictors])
+gbmCVConfMatrix <- confusionMatrix(cvData[, "classe"], gbmCVPredictions)
+gbmCVConfMatrix$overall[1]
+
+```
+
+The confusion matrix accuracy of 93% on the cross validation data fits our intuition that a boosting model should outperform a basic decision tree for this type of classification problem.   
+Now, let's see if we can do better using a RF model.  
+
+##Fit Model using Random Forest
+Our choice of Random Forest stems from our willingingness to trade off slowness, interpretability, and overfitting for an expected increase in accuracy over other models.
+
+```{r rfFitModel}
+rfModelFit <- train(classe~., data=finalTrainingData, method = "rf", trControl = trainControl(method = "cv", number = 5))
+rfCVPredictions <- predict(rfModelFit, cvData[, predictors])
+rfCVConfMatrix <- confusionMatrix(cvData[, "classe"], rfCVPredictions)
+rfCVConfMatrix
+rfCVConfMatrix$overall[1]
+
+```
+
+The confusion matrix accuracy of 99+% and concomitant out-of-sample error < 1% on the cross-validation data builds our confidence for how our Random Forest model will perform on the testing set.
+
+##Prediction on Test Data
+Of the three classification models, Random Forest more accurately classified the cross-validation set. So, now we apply the model to classify the exercise activities based on the hold-out data from 20 test cases.  
+
+```{r predictions}
+testingData <- read.csv(url(testUrl))
+rfPredictions <- predict(rfModelFit, testingData[, predictors])
+rfPredictions
+
+```
+
+##Conclusion
+We trained 3 models:  
+1. Decision Tree had accuracy of 43% and out-of-sample error of 1 - accuracy = 57%.  
+2. Gradient Boosting had accuracy of 93% and out-of-sample error of 1 - accuracy = 7%.    
+3. Random Forest had accuracy of 99+% and out-of-sample error of 1 - accuracy = < 1%.  
+We applied our best model, Random Forests on the 20 test cases and correctly classified all cases by their classe. 
+
+
+##Appendix
+###References
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
